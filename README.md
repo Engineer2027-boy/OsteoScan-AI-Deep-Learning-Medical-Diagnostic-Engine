@@ -1,4 +1,5 @@
-OsteoScan AI:Deep Learning Medical Diagnostic Engine    
+Title : OsteoScan AI:Deep Learning Medical Diagnostic Engine    
+____________________________________________________________________________________________________________________________________________________________________________________________________________________
 OsteoScan AI is a full-stack medical diagnostic platform built with PyTorch, FastAPI, and React.js, powered by a fine-tuned 121-layer DenseNet architecture. Designed as a real-time clinical triage assistant,    
 the system evaluates chest X-rays to accelerate emergency room workflows. It achieves a 6.8% diagnostic error rate and 92.4% sensitivity on unseen test benchmarks, significantly outperforming average clinical    
 radiologist error rates of ~17.5%. The core novelty of the project lies in its integration of Explainable AI (XAI) using Class Activation Maps (CAM), which project spatial heatmaps over high-risk pathology    
