@@ -4,24 +4,20 @@ from torchvision import models, transforms
 import cv2
 import numpy as np
 from PIL import Image
-import io
 import base64
+import os
 
 # ==========================================
 # 1. CLAHE IMAGE PREPROCESSING
 # ==========================================
-def preprocess_clahe(image_bytes: bytes) -> Image.Image:
-    # Decode image bytes to OpenCV grayscale array
+def preprocess_clahe(image_bytes: bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError("Invalid image format or unreadable file")
-    
-    # Apply Contrast Limited Adaptive Histogram Equalization
+
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced_img = clahe.apply(img)
-    
-    # Convert to 3-channel RGB for PyTorch vision models
     enhanced_rgb = cv2.cvtColor(enhanced_img, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(enhanced_rgb), img
 
@@ -31,10 +27,13 @@ def preprocess_clahe(image_bytes: bytes) -> Image.Image:
 class XRayFractureNet(nn.Module):
     def __init__(self, pretrained=True):
         super(XRayFractureNet, self).__init__()
-        self.densenet = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT if pretrained else None)
+        # Load base architecture with weights
+        self.densenet = models.densenet121(
+            weights=models.DenseNet121_Weights.DEFAULT if pretrained else None
+        )
         in_features = self.densenet.classifier.in_features
         self.densenet.classifier = nn.Sequential(
-            nn.Linear(in_features, 1) # Binary logit output
+            nn.Linear(in_features, 1)
         )
 
     def forward(self, x):
@@ -49,7 +48,6 @@ class GradCAM:
         self.target_layer = target_layer
         self.gradients = None
         self.activations = None
-        
         target_layer.register_forward_hook(self.save_activation)
         target_layer.register_full_backward_hook(self.save_gradient)
 
@@ -62,16 +60,14 @@ class GradCAM:
     def generate(self, input_tensor):
         self.model.eval()
         output = self.model(input_tensor)
-        
         self.model.zero_grad()
         output.backward(gradient=torch.ones_like(output))
         
         gradients = self.gradients.data.cpu().numpy()[0]
         activations = self.activations.data.cpu().numpy()[0]
-        
         weights = np.mean(gradients, axis=(1, 2))
-        cam = np.zeros(activations.shape[1:], dtype=np.float32)
         
+        cam = np.zeros(activations.shape[1:], dtype=np.float32)
         for i, w in enumerate(weights):
             cam += w * activations[i, :, :]
             
@@ -88,7 +84,18 @@ class GradCAM:
 class FracturePipeline:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Load DenseNet121 with default weights
         self.model = XRayFractureNet(pretrained=True).to(self.device)
+        
+        weights_path = "fracture_densenet.pth"
+        if os.path.exists(weights_path):
+            state_dict = torch.load(weights_path, map_location=self.device)
+            # Safe loading: handles state dict whether it contains full model or classifier head
+            self.model.load_state_dict(state_dict, strict=False)
+            print(f"Loaded fine-tuned classifier weights from '{weights_path}' successfully on {self.device}.")
+        else:
+            print("WARNING: 'fracture_densenet.pth' not found! Operating on pre-trained base model.")
+
         self.model.eval()
         self.grad_cam = GradCAM(self.model, self.model.densenet.features.denseblock4)
         
@@ -101,24 +108,20 @@ class FracturePipeline:
     def predict(self, image_bytes: bytes):
         pil_img, raw_cv_img = preprocess_clahe(image_bytes)
         input_tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
-        
         heatmap, prob = self.grad_cam.generate(input_tensor)
-        
-        # Prepare heatmap overlay
+
         orig_resized = cv2.resize(raw_cv_img, (224, 224))
         orig_rgb = cv2.cvtColor(orig_resized, cv2.COLOR_GRAY2RGB)
-        
         heatmap_resized = cv2.resize(heatmap, (224, 224))
         heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET)
-        
-        overlay = cv2.addWeighted(orig_rgb, 0.6, heatmap_colored, 0.4, 0)
-        
-        # Convert overlays to Base64 strings for React UI rendering
+        heatmap_rgb = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        overlay = cv2.addWeighted(orig_rgb, 0.6, heatmap_rgb, 0.4, 0)
+
         _, overlay_buf = cv2.imencode('.png', cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
         overlay_b64 = base64.b64encode(overlay_buf).decode('utf-8')
-        
+
         return {
-            "fracture_detected": prob > 0.5,
-            "confidence": round(prob * 100, 2),
+            "fracture_detected": bool(prob < 0.5), # In training: 'fractured' mapped to 0
+            "confidence": round((1 - prob if prob < 0.5 else prob) * 100, 2),
             "heatmap_base64": f"data:image/png;base64,{overlay_b64}"
         }
